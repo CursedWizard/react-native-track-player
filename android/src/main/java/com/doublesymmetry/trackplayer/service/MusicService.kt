@@ -105,9 +105,11 @@ class MusicService : HeadlessJsMediaService() {
             data = Uri.parse("trackplayer://notification.click")
             action = Intent.ACTION_VIEW
         }
+        val uniqueSessionId = "rntp_session_${System.currentTimeMillis()}"
         mediaSession = MediaLibrarySession.Builder(this, fakePlayer,
-            InnerMediaSessionCallback()
-        )
+              InnerMediaSessionCallback()
+          )
+            .setId(uniqueSessionId)
             .setBitmapLoader(CacheBitmapLoader(CoilBitmapLoader(this)))
             // https://github.com/androidx/media/issues/1218
             .setSessionActivity(
@@ -167,7 +169,6 @@ class MusicService : HeadlessJsMediaService() {
         }
 
     private var latestOptions: Bundle? = null
-    private var commandStarted = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         onStartCommandIntentValid = intent != null
@@ -176,11 +177,7 @@ class MusicService : HeadlessJsMediaService() {
             // HACK: this is not supposed to be here. I definitely screwed up. but Why?
             onMediaKeyEvent(intent)
         }
-        // HACK: Why is onPlay triggering onStartCommand??
-        if (!commandStarted) {
-            commandStarted = true
-            super.onStartCommand(intent, flags, startId)
-        }
+        super.onStartCommand(intent, flags, startId)
         // NOTE: this must NOT be START_STICKY. We tear down and call exitProcess(0) in
         // onTaskRemoved() (see below) whenever there's nothing to keep alive for; if the
         // system were told to restart the service afterwards, it would relaunch React Native
@@ -302,7 +299,17 @@ class MusicService : HeadlessJsMediaService() {
                     playerCommandsBuilder.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
                 }
 
-                else -> {}
+                Capability.SKIP_TO_NEXT -> {
+                      playerCommandsBuilder.add(Player.COMMAND_SEEK_TO_NEXT)
+                      playerCommandsBuilder.add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                }
+
+                Capability.SKIP_TO_PREVIOUS -> {
+                      playerCommandsBuilder.add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                      playerCommandsBuilder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                }
+
+              else -> {}
             }
         }
         customLayout = CustomCommandButton.entries
