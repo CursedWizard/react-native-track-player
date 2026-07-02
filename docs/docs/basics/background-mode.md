@@ -39,6 +39,10 @@ The notification will only be visible if the following are true:
 
 - `AppKilledPlaybackBehavior.ContinuePlayback` or `AppKilledPlaybackBehavior.PausePlayback` are selected.
 - Android has not killed the playback service due to no memory, crash, or other issue.
+- There is actually something to continue or resume: if the queue is empty, or nothing is
+  actively playing when the app is removed from recents, the service is stopped and the
+  notification removed regardless of the selected behavior, since there would be nothing for
+  the user to resume.
 
 Your app will be opened when the notification is tapped. You can implement a
 custom initialization (e.g.: opening directly the player UI) by using the

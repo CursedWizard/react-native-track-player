@@ -24,6 +24,7 @@ import androidx.media3.common.Rating
 import androidx.media3.common.util.BitmapLoader
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionCommands
@@ -128,8 +129,12 @@ class MusicService : HeadlessJsMediaService() {
     }
 
     private var appKilledPlaybackBehavior =
-        AppKilledPlaybackBehavior.STOP_PLAYBACK_AND_REMOVE_NOTIFICATION
+        AppKilledPlaybackBehavior.CONTINUE_PLAYBACK
     private var stopForegroundGracePeriod: Int = DEFAULT_STOP_FOREGROUND_GRACE_PERIOD
+    private var hasStartedInForeground = false
+    private var isTaskRemoved = false
+    private var idleKillJob: Job? = null
+    private var hasStartedPlaybackAtLeastOnce = false
 
     val tracks: List<Track>
         get() = player.items.map { (it as TrackAudioItem).track }
@@ -154,6 +159,7 @@ class MusicService : HeadlessJsMediaService() {
     val event
         get() = player.playerEventHolder
 
+    // Starting playback causes playWhenReady to set true
     var playWhenReady: Boolean
         get() = player.playWhenReady
         set(value) {
@@ -175,7 +181,13 @@ class MusicService : HeadlessJsMediaService() {
             commandStarted = true
             super.onStartCommand(intent, flags, startId)
         }
-        return START_STICKY
+        // NOTE: this must NOT be START_STICKY. We tear down and call exitProcess(0) in
+        // onTaskRemoved() (see below) whenever there's nothing to keep alive for; if the
+        // system were told to restart the service afterwards, it would relaunch React Native
+        // headlessly right away, which is what made the app/process appear to run forever
+        // even though nothing was playing. See:
+        // https://github.com/doublesymmetry/react-native-track-player/issues/2617
+        return START_NOT_STICKY
     }
 
     @MainThread
@@ -383,6 +395,7 @@ class MusicService : HeadlessJsMediaService() {
     @MainThread
     fun clear() {
         player.clear()
+        hasStartedPlaybackAtLeastOnce = false
     }
 
     @MainThread
@@ -533,6 +546,23 @@ class MusicService : HeadlessJsMediaService() {
                 if (it == AudioPlayerState.ENDED && player.nextItem == null) {
                     emitQueueEndedEvent()
                 }
+
+                // If the app was already removed from recents with `ContinuePlayback`, we only
+                // kept the process alive because something was actively playing. The moment
+                // that's no longer true (e.g. the user pressed pause from the notification, or
+                // the queue ended), there's nothing left to "continue". Rather than killing the
+                // service immediately, give it `stopForegroundGracePeriod` seconds in case
+                // playback resumes (e.g. the user just paused for a moment), then kill it if it's
+                // still idle.
+                if (isTaskRemoved && appKilledPlaybackBehavior == AppKilledPlaybackBehavior.CONTINUE_PLAYBACK) {
+                    when (it) {
+                        AudioPlayerState.PLAYING,
+                        AudioPlayerState.BUFFERING,
+                        AudioPlayerState.LOADING -> cancelScheduledIdleKill()
+
+                        else -> scheduleKillIfStillIdleAfterGracePeriod()
+                    }
+                }
             }
         }
 
@@ -649,6 +679,13 @@ class MusicService : HeadlessJsMediaService() {
                     putBoolean("playWhenReady", it.playWhenReady)
                     emit(MusicEvents.PLAYBACK_PLAY_WHEN_READY_CHANGED, this)
                 }
+
+                if (it.playWhenReady && !hasStartedPlaybackAtLeastOnce) {
+                    hasStartedPlaybackAtLeastOnce = true
+                    if (::mediaSession.isInitialized) {
+                        onUpdateNotification(mediaSession, true)
+                    }
+                }
             }
         }
 
@@ -708,46 +745,117 @@ class MusicService : HeadlessJsMediaService() {
     }
 
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
-        // https://github.com/androidx/media/issues/843#issuecomment-1860555950
-        super.onUpdateNotification(session, true)
+        if (!hasStartedPlaybackAtLeastOnce) {
+            return
+        }
+
+        // Workaround for https://github.com/androidx/media/issues/843: if the service is only
+        // ever bound (never started), the very first notification can be posted before Android
+        // considers the service "started", which later prevents onTaskRemoved from being
+        // delivered and can leave the service/process running indefinitely. To avoid that we
+        // force *just the first* notification to start the service in the foreground.
+        //
+        // After that we honor Media3's own `startInForegroundRequired` value so the service is
+        // correctly allowed to leave the foreground (and eventually be stopped, e.g. when
+        // nothing is playing or the notification is dismissed) instead of being pinned in the
+        // foreground forever.
+        val startInForeground = startInForegroundRequired || !hasStartedInForeground
+        super.onUpdateNotification(session, startInForeground)
+        if (startInForeground) {
+            hasStartedInForeground = true
+        }
     }
 
     @MainThread
     override fun onTaskRemoved(rootIntent: Intent?) {
         onUnbind(rootIntent)
+        isTaskRemoved = true
         Timber.d("isInitialized = ${::player.isInitialized}, appKilledPlaybackBehavior = $appKilledPlaybackBehavior")
+
         if (!::player.isInitialized) {
+            // Nothing was ever set up (no audio was ever loaded/played), so there's nothing
+            // worth keeping this process around for.
+            Timber.d("Player was never initialized - killing service")
             mediaSession.release()
+            killServiceAndProcess()
             return
         }
 
+        val hasQueuedTracks = player.items.isNotEmpty()
+
         when (appKilledPlaybackBehavior) {
             AppKilledPlaybackBehavior.PAUSE_PLAYBACK -> {
-                Timber.d("Pausing playback - appKilledPlaybackBehavior = $appKilledPlaybackBehavior")
-                player.pause()
+                if (hasQueuedTracks) {
+                    Timber.d("Pausing playback - appKilledPlaybackBehavior = $appKilledPlaybackBehavior")
+                    player.pause()
+                } else {
+                    Timber.d("Nothing queued to pause/resume - killing service")
+                    tearDownPlayerAndKillService()
+                }
+            }
+            AppKilledPlaybackBehavior.CONTINUE_PLAYBACK -> {
+                if (hasQueuedTracks && player.isPlaying) {
+                    Timber.d("Continuing playback - appKilledPlaybackBehavior = $appKilledPlaybackBehavior")
+                } else {
+                    Timber.d("Nothing is actively playing - scheduling service teardown instead of continuing")
+                    scheduleKillIfStillIdleAfterGracePeriod()
+                }
             }
             AppKilledPlaybackBehavior.STOP_PLAYBACK_AND_REMOVE_NOTIFICATION -> {
                 Timber.d("Killing service - appKilledPlaybackBehavior = $appKilledPlaybackBehavior")
-                mediaSession.release()
-                player.clear()
-                player.stop()
-                // HACK: the service first stops, then starts, then call onTaskRemove. Why system
-                // registers the service being restarted?
-                player.destroy()
-                scope.cancel()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                }
-                onDestroy()
-                // https://github.com/androidx/media/issues/27#issuecomment-1456042326
-                stopSelf()
-                exitProcess(0)
+                tearDownPlayerAndKillService()
             }
+        }
+    }
 
-            else -> {}
+    @MainThread
+    private fun tearDownPlayerAndKillService() {
+        mediaSession.release()
+        player.clear()
+        player.stop()
+        // HACK: the service first stops, then starts, then call onTaskRemove. Why system
+        // registers the service being restarted?
+        player.destroy()
+        scope.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        onDestroy()
+        killServiceAndProcess()
+    }
+
+    @MainThread
+    private fun killServiceAndProcess() {
+        // https://github.com/androidx/media/issues/27#issuecomment-1456042326
+        stopSelf()
+        exitProcess(0)
+    }
+
+    @MainThread
+    private fun cancelScheduledIdleKill() {
+        idleKillJob?.cancel()
+        idleKillJob = null
+    }
+
+    /**
+     * Kills the service after [stopForegroundGracePeriod] seconds unless playback resumes (or
+     * this gets cancelled) before then. Used once the app has been removed from recents and
+     * there's nothing actively playing, to avoid killing the process the instant the user pauses
+     * (e.g. from the notification) in case they resume shortly after.
+     */
+    @MainThread
+    private fun scheduleKillIfStillIdleAfterGracePeriod() {
+        cancelScheduledIdleKill()
+        val gracePeriodMs = stopForegroundGracePeriod.coerceAtLeast(0) * 1000L
+        if (gracePeriodMs <= 0) {
+            tearDownPlayerAndKillService()
+            return
+        }
+        Timber.d("Nothing to continue/resume - killing service in ${stopForegroundGracePeriod}s unless playback resumes")
+        idleKillJob = scope.launch {
+            delay(gracePeriodMs)
+            if (::player.isInitialized && !player.isPlaying) {
+                Timber.d("Still idle after grace period - killing service")
+                tearDownPlayerAndKillService()
+            }
         }
     }
 

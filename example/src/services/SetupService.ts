@@ -21,7 +21,10 @@ export const SetupService = async () => {
     });
     await TrackPlayer.updateOptions({
       android: {
-        appKilledPlaybackBehavior: DefaultAudioServiceBehaviour,
+        appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
+        // Wait a minute of being idle (e.g. paused from the notification) after the app was
+        // closed before actually killing the service, in case playback resumes shortly after.
+        stopForegroundGracePeriod: 60,
       },
       capabilities: [
         Capability.Play,
