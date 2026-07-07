@@ -878,19 +878,59 @@ class MusicService : HeadlessJsMediaService() {
      */
     @MainThread
     private fun scheduleKillIfStillIdleAfterGracePeriod() {
+        scheduleIdleKillAfterDelay(stopForegroundGracePeriod.coerceAtLeast(0) * 1000L)
+    }
+
+    @MainThread
+    private fun scheduleIdleKillAfterDelay(gracePeriodMs: Long) {
         cancelScheduledIdleKill()
-        val gracePeriodMs = stopForegroundGracePeriod.coerceAtLeast(0) * 1000L
         if (gracePeriodMs <= 0) {
-            tearDownPlayerAndKillService()
+            evaluateIdleKillAfterGracePeriod()
             return
         }
-        Timber.d("Nothing to continue/resume - killing service in ${stopForegroundGracePeriod}s unless playback resumes")
+        Timber.d("Nothing to continue/resume - killing service in ${gracePeriodMs / 1000}s unless playback resumes")
         idleKillJob = scope.launch {
             delay(gracePeriodMs)
-            if (::player.isInitialized && !player.isPlaying) {
-                Timber.d("Still idle after grace period - killing service")
-                tearDownPlayerAndKillService()
-            }
+            evaluateIdleKillAfterGracePeriod()
+        }
+    }
+
+    @MainThread
+    private fun evaluateIdleKillAfterGracePeriod() {
+        if (
+            !isTaskRemoved ||
+            appKilledPlaybackBehavior != AppKilledPlaybackBehavior.CONTINUE_PLAYBACK
+        ) {
+            return
+        }
+        if (!::player.isInitialized || player.isPlaying) {
+            return
+        }
+        if (hasOtherAppForegroundServices()) {
+            val rescheduleGracePeriodSeconds = stopForegroundGracePeriod.takeIf { it > 0 }
+                ?: DEFAULT_STOP_FOREGROUND_GRACE_PERIOD
+            Timber.d(
+                "Other foreground services still running - rescheduling idle kill in ${rescheduleGracePeriodSeconds}s"
+            )
+            scheduleIdleKillAfterDelay(rescheduleGracePeriodSeconds * 1000L)
+            return
+        }
+        Timber.d("Still idle after grace period - killing service")
+        tearDownPlayerAndKillService()
+    }
+
+    /**
+     * Returns whether this app has any foreground services running besides [MusicService].
+     * As of API 26, [ActivityManager.getRunningServices] only reports the caller's own services.
+     */
+    @Suppress("DEPRECATION")
+    private fun hasOtherAppForegroundServices(): Boolean {
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val ourServiceName = javaClass.name
+        return activityManager.getRunningServices(Int.MAX_VALUE).any { service ->
+            service.service.packageName == packageName &&
+                service.foreground &&
+                service.service.className != ourServiceName
         }
     }
 
