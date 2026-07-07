@@ -13,6 +13,9 @@ import android.provider.Settings
 import android.view.KeyEvent
 import androidx.annotation.MainThread
 import androidx.annotation.OptIn
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.media.utils.MediaConstants
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -121,6 +124,7 @@ class MusicService : HeadlessJsMediaService() {
                 )
             )
             .build()
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         super.onCreate()
     }
 
@@ -137,6 +141,12 @@ class MusicService : HeadlessJsMediaService() {
     private var isTaskRemoved = false
     private var idleKillJob: Job? = null
     private var hasStartedPlaybackAtLeastOnce = false
+
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            onAppTaskRestored()
+        }
+    }
 
     val tracks: List<Track>
         get() = player.items.map { (it as TrackAudioItem).track }
@@ -191,6 +201,7 @@ class MusicService : HeadlessJsMediaService() {
     fun setupPlayer(playerOptions: Bundle?) {
         if (this::player.isInitialized) {
             print("Player was initialized previously. Preventing reinitialization.")
+            onAppTaskRestored()
             return
         }
         Timber.d("Setting up player")
@@ -738,6 +749,7 @@ class MusicService : HeadlessJsMediaService() {
     override fun onBind(intent: Intent?): IBinder? {
         val intentAction = intent?.action
         Timber.d("intentAction = $intentAction")
+        onAppTaskRestored()
         return if (intentAction != null) {
             super.onBind(intent)
         } else {
@@ -843,6 +855,22 @@ class MusicService : HeadlessJsMediaService() {
     }
 
     /**
+     * Called when the app task is back (reopened from launcher, notification, or service
+     * re-bound). Cancels any pending idle kill scheduled after [onTaskRemoved] so the process
+     * is not torn down while the user is using the app again.
+     */
+    @MainThread
+    private fun onAppTaskRestored() {
+        if (!isTaskRemoved && idleKillJob == null) return
+
+        cancelScheduledIdleKill()
+        if (isTaskRemoved) {
+            Timber.d("App task restored - cancelling scheduled idle kill")
+            isTaskRemoved = false
+        }
+    }
+
+    /**
      * Kills the service after [stopForegroundGracePeriod] seconds unless playback resumes (or
      * this gets cancelled) before then. Used once the app has been removed from recents and
      * there's nothing actively playing, to avoid killing the process the instant the user pauses
@@ -907,6 +935,8 @@ class MusicService : HeadlessJsMediaService() {
 
     @MainThread
     override fun onDestroy() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(processLifecycleObserver)
+
         if (::player.isInitialized) {
             Timber.d("Releasing media session and destroying player")
             mediaSession.release()
