@@ -1,6 +1,6 @@
 {
-  "name": "react-native-track-player",
-  "version": "5.0.0-alpha0",
+  "name": "@kihibu/react-native-track-player",
+  "version": "1.0.0",
   "description": "A fully fledged audio module created for music apps",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -79,10 +79,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/doublesymmetry/react-native-track-player.git"
+    "url": "https://github.com/CursedWizard/react-native-track-player"
   },
   "bugs": {
-    "url": "https://github.com/doublesymmetry/react-native-track-player/issues"
+    "url": "https://github.com/CursedWizard/react-native-track-player/issues"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -124,7 +124,6 @@
     "turbo": "^1.10.7",
     "typescript": "^5.8.3"
   },
-  "funding": "https://github.com/doublesymmetry/react-native-track-player?sponsor=1",
   "workspaces": [
     "example"
   ],

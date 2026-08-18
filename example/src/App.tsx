@@ -14,7 +14,7 @@ import {
   Platform,
   Dimensions,
 } from 'react-native';
-import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
+import TrackPlayer, { useActiveTrack } from '@kihibu/react-native-track-player';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import BottomSheet from '@gorhom/bottom-sheet';

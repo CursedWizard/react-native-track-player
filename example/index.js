@@ -1,5 +1,5 @@
 import { AppRegistry } from 'react-native';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer from '@kihibu/react-native-track-player';
 
 import App from './src/App';
 import { PlaybackService } from './src/services';

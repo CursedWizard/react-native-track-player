@@ -1,7 +1,7 @@
 import React from 'react';
 import { Spacer } from './Spacer';
 import { Button } from './Button';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer from '@kihibu/react-native-track-player';
 import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 
 const onUpdateNotificationMetadata = async () => {

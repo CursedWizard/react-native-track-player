@@ -5,7 +5,7 @@ import TrackPlayer, {
   AppKilledPlaybackBehavior,
   Capability,
   RepeatMode,
-} from 'react-native-track-player';
+} from '@kihibu/react-native-track-player';
 import { DefaultAudioServiceBehaviour, DefaultRepeatMode } from '../services';
 import { Spacer } from './Spacer';
 import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
