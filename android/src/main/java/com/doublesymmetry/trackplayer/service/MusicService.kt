@@ -765,6 +765,12 @@ class MusicService : HeadlessJsMediaService() {
 
     override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
         if (!hasStartedPlaybackAtLeastOnce) {
+            // clear() resets the flag before Media3 applies the empty timeline. Forward that
+            // update so the notification is removed. A queue that has not started playing yet
+            // must not post one.
+            if (isPlayerQueueEmpty()) {
+                super.onUpdateNotification(session, false)
+            }
             return
         }
 
@@ -783,6 +789,13 @@ class MusicService : HeadlessJsMediaService() {
         if (startInForeground) {
             hasStartedInForeground = true
         }
+    }
+
+    private fun isPlayerQueueEmpty(): Boolean {
+        if (!::player.isInitialized) {
+            return false
+        }
+        return player.exoPlayer.mediaItemCount == 0
     }
 
     @MainThread
